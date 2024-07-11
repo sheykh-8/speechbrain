@@ -194,3 +194,14 @@ class Postnet(nn.Module):
             i += 1
 
         return x
+
+
+
+class TacotronPostNet(nn.Module):
+  def __init__(self):
+    super().__init__()
+    
+    self.postnet = Postnet()
+
+  def forward(self, mel_outputs):
+    return self.postnet(mel_outputs)
