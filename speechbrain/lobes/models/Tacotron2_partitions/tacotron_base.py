@@ -1,5 +1,8 @@
 
-
+import torch
+from torch import nn
+from torch.nn import functional as F
+from math import sqrt
 
 class Tacotron2(nn.Module):
     """The Tactron2 text-to-speech model, based on the NVIDIA implementation.
@@ -298,3 +301,37 @@ class Tacotron2(nn.Module):
         alignments = alignments.unfold(1, BS, BS).transpose(0, 2)
 
         return mel_outputs_postnet, mel_lengths, alignments
+
+
+
+
+def get_mask_from_lengths(lengths, max_len=None):
+    """Creates a binary mask from sequence lengths
+
+    Arguments
+    ---------
+    lengths: torch.Tensor
+        A tensor of sequence lengths
+    max_len: int (Optional)
+        Maximum sequence length, defaults to None.
+
+    Returns
+    -------
+    mask: torch.Tensor
+        the mask where padded elements are set to True.
+        Then one can use tensor.masked_fill_(mask, 0) for the masking.
+
+    Example
+    -------
+    >>> lengths = torch.tensor([3, 2, 4])
+    >>> get_mask_from_lengths(lengths)
+    tensor([[False, False, False,  True],
+            [False, False,  True,  True],
+            [False, False, False, False]])
+    """
+    if max_len is None:
+        max_len = torch.max(lengths).item()
+    seq_range = torch.arange(
+        max_len, device=lengths.device, dtype=lengths.dtype
+    )
+    return ~(seq_range.unsqueeze(0) < lengths.unsqueeze(1))

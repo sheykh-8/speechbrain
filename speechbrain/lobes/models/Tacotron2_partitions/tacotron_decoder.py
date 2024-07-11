@@ -1,3 +1,439 @@
+import torch
+from torch import nn
+from torch.nn import functional as F
+
+
+class LinearNorm(torch.nn.Module):
+    """A linear layer with Xavier initialization
+
+    Arguments
+    ---------
+    in_dim: int
+        the input dimension
+    out_dim: int
+        the output dimension
+    bias: bool
+        whether or not to use a bias
+    w_init_gain: linear
+        the weight initialization gain type (see torch.nn.init.calculate_gain)
+
+    Example
+    -------
+    >>> import torch
+    >>> from speechbrain.lobes.models.Tacotron2 import LinearNorm
+    >>> layer = LinearNorm(in_dim=5, out_dim=3)
+    >>> x = torch.randn(3, 5)
+    >>> y = layer(x)
+    >>> y.shape
+    torch.Size([3, 3])
+    """
+
+    def __init__(self, in_dim, out_dim, bias=True, w_init_gain="linear"):
+        super().__init__()
+        self.linear_layer = torch.nn.Linear(in_dim, out_dim, bias=bias)
+
+        torch.nn.init.xavier_uniform_(
+            self.linear_layer.weight,
+            gain=torch.nn.init.calculate_gain(w_init_gain),
+        )
+
+    def forward(self, x):
+        """Computes the forward pass
+
+        Arguments
+        ---------
+        x: torch.Tensor
+            a (batch, features) input tensor
+
+
+        Returns
+        -------
+        output: torch.Tensor
+            the linear layer output
+
+        """
+        return self.linear_layer(x)
+
+
+
+
+class Prenet(nn.Module):
+    """The Tacotron pre-net module consisting of a specified number of
+    normalized (Xavier-initialized) linear layers
+
+    Arguments
+    ---------
+    in_dim: int
+        the input dimensions
+    sizes: int
+        the dimension of the hidden layers/output
+    dropout: float
+        the dropout probability
+
+    Example
+    -------
+    >>> import torch
+    >>> from speechbrain.lobes.models.Tacotron2 import Prenet
+    >>> layer = Prenet()
+    >>> x = torch.randn(862, 2, 80)
+    >>> output = layer(x)
+    >>> output.shape
+    torch.Size([862, 2, 256])
+    """
+
+    def __init__(self, in_dim=80, sizes=[256, 256], dropout=0.5):
+        super().__init__()
+        in_sizes = [in_dim] + sizes[:-1]
+        self.layers = nn.ModuleList(
+            [
+                LinearNorm(in_size, out_size, bias=False)
+                for (in_size, out_size) in zip(in_sizes, sizes)
+            ]
+        )
+        self.dropout = dropout
+
+    def forward(self, x):
+        """Computes the forward pass for the prenet
+
+        Arguments
+        ---------
+        x: torch.Tensor
+            the prenet inputs
+
+        Returns
+        -------
+        output: torch.Tensor
+            the output
+        """
+        for linear in self.layers:
+            x = F.dropout(F.relu(linear(x)), p=self.dropout, training=True)
+        return x
+
+
+
+
+class ConvNorm(torch.nn.Module):
+    """A 1D convolution layer with Xavier initialization
+
+    Arguments
+    ---------
+    in_channels: int
+        the number of input channels
+    out_channels: int
+        the number of output channels
+    kernel_size: int
+        the kernel size
+    stride: int
+        the convolutional stride
+    padding: int
+        the amount of padding to include. If not provided, it will be calculated
+        as dilation * (kernel_size - 1) / 2
+    dilation: int
+        the dilation of the convolution
+    bias: bool
+        whether or not to use a bias
+    w_init_gain: linear
+        the weight initialization gain type (see torch.nn.init.calculate_gain)
+
+    Example
+    -------
+    >>> import torch
+    >>> from speechbrain.lobes.models.Tacotron2 import ConvNorm
+    >>> layer = ConvNorm(in_channels=10, out_channels=5, kernel_size=3)
+    >>> x = torch.randn(3, 10, 5)
+    >>> y = layer(x)
+    >>> y.shape
+    torch.Size([3, 5, 5])
+    """
+
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size=1,
+        stride=1,
+        padding=None,
+        dilation=1,
+        bias=True,
+        w_init_gain="linear",
+    ):
+        super().__init__()
+        if padding is None:
+            assert kernel_size % 2 == 1
+            padding = int(dilation * (kernel_size - 1) / 2)
+
+        self.conv = torch.nn.Conv1d(
+            in_channels,
+            out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            padding=padding,
+            dilation=dilation,
+            bias=bias,
+        )
+
+        torch.nn.init.xavier_uniform_(
+            self.conv.weight, gain=torch.nn.init.calculate_gain(w_init_gain)
+        )
+
+    def forward(self, signal):
+        """Computes the forward pass
+
+        Arguments
+        ---------
+        signal: torch.Tensor
+            the input to the convolutional layer
+
+        Returns
+        -------
+        output: torch.Tensor
+            the output
+        """
+        return self.conv(signal)
+
+
+
+class LocationLayer(nn.Module):
+    """A location-based attention layer consisting of a Xavier-initialized
+    convolutional layer followed by a dense layer
+
+    Arguments
+    ---------
+    attention_n_filters: int
+        the number of filters used in attention
+
+    attention_kernel_size: int
+        the kernel size of the attention layer
+
+    attention_dim: int
+        the dimension of linear attention layers
+
+
+    Example
+    -------
+    >>> import torch
+    >>> from speechbrain.lobes.models.Tacotron2 import LocationLayer
+    >>> layer = LocationLayer()
+    >>> attention_weights_cat = torch.randn(3, 2, 64)
+    >>> processed_attention = layer(attention_weights_cat)
+    >>> processed_attention.shape
+    torch.Size([3, 64, 128])
+
+    """
+
+    def __init__(
+        self,
+        attention_n_filters=32,
+        attention_kernel_size=31,
+        attention_dim=128,
+    ):
+        super().__init__()
+        padding = int((attention_kernel_size - 1) / 2)
+        self.location_conv = ConvNorm(
+            2,
+            attention_n_filters,
+            kernel_size=attention_kernel_size,
+            padding=padding,
+            bias=False,
+            stride=1,
+            dilation=1,
+        )
+        self.location_dense = LinearNorm(
+            attention_n_filters, attention_dim, bias=False, w_init_gain="tanh"
+        )
+
+    def forward(self, attention_weights_cat):
+        """Performs the forward pass for the attention layer
+
+        Arguments
+        ---------
+        attention_weights_cat: torch.Tensor
+            the concatenating attention weights
+
+        Returns
+        -------
+        processed_attention: torch.Tensor
+            the attention layer output
+
+        """
+        processed_attention = self.location_conv(attention_weights_cat)
+        processed_attention = processed_attention.transpose(1, 2)
+        processed_attention = self.location_dense(processed_attention)
+        return processed_attention
+
+
+
+def get_mask_from_lengths(lengths, max_len=None):
+    """Creates a binary mask from sequence lengths
+
+    Arguments
+    ---------
+    lengths: torch.Tensor
+        A tensor of sequence lengths
+    max_len: int (Optional)
+        Maximum sequence length, defaults to None.
+
+    Returns
+    -------
+    mask: torch.Tensor
+        the mask where padded elements are set to True.
+        Then one can use tensor.masked_fill_(mask, 0) for the masking.
+
+    Example
+    -------
+    >>> lengths = torch.tensor([3, 2, 4])
+    >>> get_mask_from_lengths(lengths)
+    tensor([[False, False, False,  True],
+            [False, False,  True,  True],
+            [False, False, False, False]])
+    """
+    if max_len is None:
+        max_len = torch.max(lengths).item()
+    seq_range = torch.arange(
+        max_len, device=lengths.device, dtype=lengths.dtype
+    )
+    return ~(seq_range.unsqueeze(0) < lengths.unsqueeze(1))
+
+
+
+class Attention(nn.Module):
+    """The Tacotron attention layer. Location-based attention is used.
+
+    Arguments
+    ---------
+    attention_rnn_dim: int
+        the dimension of the RNN to which the attention layer
+        is applied
+    embedding_dim: int
+        the embedding dimension
+    attention_dim: int
+        the dimension of the memory cell
+    attention_location_n_filters: int
+        the number of location filters
+    attention_location_kernel_size: int
+        the kernel size of the location layer
+
+    Example
+    -------
+    >>> import torch
+    >>> from speechbrain.lobes.models.Tacotron2 import (
+    ... Attention)
+    >>> from speechbrain.lobes.models.transformer.Transformer import (
+    ... get_mask_from_lengths)
+    >>> layer = Attention()
+    >>> attention_hidden_state = torch.randn(2, 1024)
+    >>> memory = torch.randn(2, 173, 512)
+    >>> processed_memory = torch.randn(2, 173, 128)
+    >>> attention_weights_cat = torch.randn(2, 2, 173)
+    >>> memory_lengths = torch.tensor([173, 91])
+    >>> mask = get_mask_from_lengths(memory_lengths)
+    >>> attention_context, attention_weights = layer(
+    ...    attention_hidden_state,
+    ...    memory,
+    ...    processed_memory,
+    ...    attention_weights_cat,
+    ...    mask
+    ... )
+    >>> attention_context.shape, attention_weights.shape
+    (torch.Size([2, 512]), torch.Size([2, 173]))
+    """
+
+    def __init__(
+        self,
+        attention_rnn_dim=1024,
+        embedding_dim=512,
+        attention_dim=128,
+        attention_location_n_filters=32,
+        attention_location_kernel_size=31,
+    ):
+        super().__init__()
+        self.query_layer = LinearNorm(
+            attention_rnn_dim, attention_dim, bias=False, w_init_gain="tanh"
+        )
+        self.memory_layer = LinearNorm(
+            embedding_dim, attention_dim, bias=False, w_init_gain="tanh"
+        )
+        self.v = LinearNorm(attention_dim, 1, bias=False)
+        self.location_layer = LocationLayer(
+            attention_location_n_filters,
+            attention_location_kernel_size,
+            attention_dim,
+        )
+        self.score_mask_value = -float("inf")
+
+    def get_alignment_energies(
+        self, query, processed_memory, attention_weights_cat
+    ):
+        """Computes the alignment energies
+
+        Arguments
+        ---------
+        query: torch.Tensor
+            decoder output (batch, n_mel_channels * n_frames_per_step)
+        processed_memory: torch.Tensor
+            processed encoder outputs (B, T_in, attention_dim)
+        attention_weights_cat: torch.Tensor
+            cumulative and prev. att weights (B, 2, max_time)
+
+        Returns
+        -------
+        alignment : torch.Tensor
+            (batch, max_time)
+        """
+
+        processed_query = self.query_layer(query.unsqueeze(1))
+        processed_attention_weights = self.location_layer(attention_weights_cat)
+        energies = self.v(
+            torch.tanh(
+                processed_query + processed_attention_weights + processed_memory
+            )
+        )
+
+        energies = energies.squeeze(2)
+        return energies
+
+    def forward(
+        self,
+        attention_hidden_state,
+        memory,
+        processed_memory,
+        attention_weights_cat,
+        mask,
+    ):
+        """Computes the forward pass
+
+        Arguments
+        ---------
+        attention_hidden_state: torch.Tensor
+            attention rnn last output
+        memory: torch.Tensor
+            encoder outputs
+        processed_memory: torch.Tensor
+            processed encoder outputs
+        attention_weights_cat: torch.Tensor
+            previous and cumulative attention weights
+        mask: torch.Tensor
+            binary mask for padded data
+
+        Returns
+        -------
+        result: tuple
+            a (attention_context, attention_weights) tuple
+        """
+        alignment = self.get_alignment_energies(
+            attention_hidden_state, processed_memory, attention_weights_cat
+        )
+
+        alignment = alignment.masked_fill(mask, self.score_mask_value)
+
+        attention_weights = F.softmax(alignment, dim=1)
+        attention_context = torch.bmm(attention_weights.unsqueeze(1), memory)
+        attention_context = attention_context.squeeze(1)
+
+        return attention_context, attention_weights
+
+
+
 class Decoder(nn.Module):
     """The Tacotron decoder
 
