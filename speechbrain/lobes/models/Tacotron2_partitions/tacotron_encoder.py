@@ -215,3 +215,14 @@ class Encoder(nn.Module):
 
         return outputs
 
+
+
+
+class TacotronEncoder(nn.Module):
+  def __init__(self):
+    super().__init__()
+    
+    self.encoder = Encoder()
+  
+  def forward(self, x, input_lengths):
+    return self.encoder(x, input_lengths)
