@@ -986,3 +986,14 @@ class Decoder(nn.Module):
 
         return mel_outputs, gate_outputs, alignments, mel_lengths
 
+
+
+
+class TacotronDecoder(nn.Module):
+  def __init__(self):
+    super().__init__()
+
+    self.decoder = Decoder()
+
+  def forward(self, memory, decoder_inputs, memory_lengths):
+    return self.decoder(memory, decoder_inputs, memory_lengths)
