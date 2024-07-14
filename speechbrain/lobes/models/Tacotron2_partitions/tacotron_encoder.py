@@ -1,8 +1,10 @@
+from speechbrain.lobes.models.Tacotron2_partitions.utils.padding import PaddedBatch
+
 
 import torch
 from torch import nn
 from torch.nn import functional as F
-
+from math import sqrt
 
 
 class ConvNorm(torch.nn.Module):
@@ -83,8 +85,6 @@ class ConvNorm(torch.nn.Module):
             the output
         """
         return self.conv(signal)
-
-
 
 
 class Encoder(nn.Module):
@@ -216,13 +216,62 @@ class Encoder(nn.Module):
         return outputs
 
 
-
-
 class TacotronEncoder(nn.Module):
-  def __init__(self):
-    super().__init__()
+    def __init__(
+        self,
+        n_symbols=148,
+        symbols_embedding_dim=512,
+    ):
+        super().__init__()
+
+        self.embedding = nn.Embedding(n_symbols, symbols_embedding_dim)
+        std = sqrt(2.0 / (n_symbols + symbols_embedding_dim))
+        val = sqrt(3.0) * std  # uniform bounds for std
+        self.embedding.weight.data.uniform_(-val, val)
+
+        self.encoder = Encoder()
+
+    def forward(self, inputs, alignments_dim=None):
+        inputs, input_lengths, targets, max_len, output_lengths = inputs
+        input_lengths, output_lengths = input_lengths.data, output_lengths.data
+        embedded_inputs = self.embedding(inputs).transpose(1, 2)
+        
+        
+        return self.encoder(embedded_inputs, input_lengths)
     
-    self.encoder = Encoder()
-  
-  def forward(self, x, input_lengths):
-    return self.encoder(x, input_lengths)
+    
+    def encode_batch(self, texts):
+        """Computes mel-spectrogram for a list of texts
+
+        Texts must be sorted in decreasing order on their lengths
+
+        Arguments
+        ---------
+        texts: List[str]
+            texts to be encoded into spectrogram
+
+        Returns
+        -------
+        tensors of output spectrograms, output lengths and alignments
+        """
+        with torch.no_grad():
+            inputs = [
+                {
+                    "text_sequences": torch.tensor(
+                        self.text_to_seq(item)[0], device=self.device
+                    )
+                }
+                for item in texts
+            ]
+            inputs = PaddedBatch(inputs)
+
+            lens = [self.text_to_seq(item)[1] for item in texts]
+            assert lens == sorted(
+                lens, reverse=True
+            ), "input lengths must be sorted in decreasing order"
+            input_lengths = torch.tensor(lens, device=self.device)
+
+            # mel_outputs_postnet, mel_lengths, alignments = self.infer(
+            #     inputs.text_sequences.data, input_lengths
+            # )
+        return self.encoder(inputs, input_lengths)
