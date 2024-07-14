@@ -143,6 +143,8 @@ class Tacotron2(nn.Module):
         self.mask_padding = mask_padding
         self.n_mel_channels = n_mel_channels
         self.n_frames_per_step = n_frames_per_step
+        
+        # TODO: Embedding is moved to the encoder class for ease of use
         self.embedding = nn.Embedding(n_symbols, symbols_embedding_dim)
         std = sqrt(2.0 / (n_symbols + symbols_embedding_dim))
         val = sqrt(3.0) * std  # uniform bounds for std
