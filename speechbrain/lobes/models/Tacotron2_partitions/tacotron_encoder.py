@@ -1,3 +1,4 @@
+from speechbrain.lobes.models.Tacotron2_partitions.utils import text_to_sequence
 from speechbrain.lobes.models.Tacotron2_partitions.utils.padding import PaddedBatch
 
 
@@ -231,13 +232,13 @@ class TacotronEncoder(nn.Module):
 
         self.encoder = Encoder()
 
-    def forward(self, inputs, alignments_dim=None):
-        inputs, input_lengths, targets, max_len, output_lengths = inputs
-        input_lengths, output_lengths = input_lengths.data, output_lengths.data
+    def forward(self, inputs, input_lengths):
         embedded_inputs = self.embedding(inputs).transpose(1, 2)
-        
-        
         return self.encoder(embedded_inputs, input_lengths)
+    
+    def text_to_seq(self, text):
+        seq =text_to_sequence(text, ["english_cleaners"])
+        return seq, len(seq)
     
     
     def encode_batch(self, texts):
@@ -258,7 +259,7 @@ class TacotronEncoder(nn.Module):
             inputs = [
                 {
                     "text_sequences": torch.tensor(
-                        self.text_to_seq(item)[0], device=self.device
+                        self.text_to_seq(item)[0], device="cpu"
                     )
                 }
                 for item in texts
@@ -269,9 +270,9 @@ class TacotronEncoder(nn.Module):
             assert lens == sorted(
                 lens, reverse=True
             ), "input lengths must be sorted in decreasing order"
-            input_lengths = torch.tensor(lens, device=self.device)
+            input_lengths = torch.tensor(lens, device="cpu")
 
             # mel_outputs_postnet, mel_lengths, alignments = self.infer(
             #     inputs.text_sequences.data, input_lengths
             # )
-        return self.encoder(inputs, input_lengths)
+        return self.forward(inputs.text_sequences.data, input_lengths)
